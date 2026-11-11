@@ -41,20 +41,7 @@ GitHub Actions でも push のたびにビルドし、Excel を使わないテ�
 
 [Releases](https://github.com/sato3123/xls_shrink/releases) から `XlsImageShrink.exe` をダウンロードしてください。インストールは不要です。
 
-## Code signing policy
-
-Windows 向けのリリース（`XlsImageShrink.exe`）は、コード署名を付けて配布する予定です（SignPath Foundation に申請中）。
-
-Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
-
-- 署名するのは、このリポジトリのソースから GitHub Actions（GitHub ホストのランナー）でビルドした成果物だけです。
-- チームの役割
-  - 作成者・コミッター: [sato3123](https://github.com/sato3123)
-  - レビュアー: [sato3123](https://github.com/sato3123)
-  - 署名の承認者: [sato3123](https://github.com/sato3123)
-- すべてのメンバーは GitHub と SignPath で多要素認証を使用します。
-
-## Privacy policy
+## プライバシー
 
 このプログラムは、利用者や作業内容の情報をどこにも送信しません。ネットワーク通信は一切行いません（更新確認・利用状況の送信もありません）。
 設定・ログ・レポート・履歴は、実行ファイルと同じフォルダ（書き込めない場合は `%APPDATA%\XlsImageShrink`）にだけ保存されます。
@@ -65,5 +52,5 @@ Free code signing provided by [SignPath.io](https://about.signpath.io/), certifi
 
 ## 注意
 
-- 署名のない exe は、Windows 11 のスマート アプリ コントロールが有効な PC では起動がブロックされます。配布にはコード署名が必要です。
+- exe にはコード署名がありません。Windows 11 のスマート アプリ コントロールが有効な PC では起動がブロックされます。その PC で使う場合は、スマート アプリ コントロールをオフにする必要があります。
 - ダウンロードした exe は「ブロックの解除」（ファイルのプロパティ）が必要な場合があります。

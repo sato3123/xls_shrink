@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: write   # リリースを作成する
-  actions: read     # SignPath が成果物を取得する
 
 jobs:
   build:
@@ -48,40 +47,6 @@ jobs:
           name: citest-report
           path: test/citest_report.txt
 
-      # SignPath に渡す未署名の exe（署名対象はこの 1 ファイルだけ）
-      - name: Upload unsigned exe
-        id: upload-unsigned
-        uses: actions/upload-artifact@v4
-        with:
-          name: XlsImageShrink-unsigned
-          path: bin/XlsImageShrink.exe
-
-      # SignPath Foundation の審査に通り、リポジトリの Variables / Secrets を設定すると有効になる
-      #   Variables: SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG, SIGNPATH_SIGNING_POLICY_SLUG
-      #   Secrets:   SIGNPATH_API_TOKEN
-      - name: Sign with SignPath
-        id: sign
-        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' && github.event_name != 'pull_request' }}
-        uses: signpath/github-action-submit-signing-request@v1
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
-          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: signed
-
-      - name: Check signature
-        if: ${{ steps.sign.outcome == 'success' }}
-        shell: pwsh
-        run: |
-          $exe = Get-ChildItem signed -Recurse -Filter XlsImageShrink.exe | Select-Object -First 1
-          $sig = Get-AuthenticodeSignature $exe.FullName
-          Write-Output "Status: $($sig.Status)  Signer: $($sig.SignerCertificate.Subject)"
-          if ($sig.Status -ne 'Valid') { Write-Output "::error::signature is not valid"; exit 1 }
-          Copy-Item $exe.FullName bin\XlsImageShrink.exe -Force
-
       - name: Upload exe
         uses: actions/upload-artifact@v4
         with:
@@ -99,7 +64,6 @@ jobs:
           $tag = "v" + $m.Matches[0].Groups[1].Value
           gh release view $tag 2>$null
           if ($LASTEXITCODE -eq 0) { Write-Output "$tag は作成済み"; exit 0 }
-          $signed = "${{ steps.sign.outcome }}" -eq "success"
-          $note = if ($signed) { "コード署名済み（SignPath Foundation）。" } else { "コード署名なし。Windows 11 のスマート アプリ コントロールが有効な PC では起動がブロックされます。" }
+          $note = "コード署名なし。Windows 11 のスマート アプリ コントロールが有効な PC では起動がブロックされます。"
           Compress-Archive -Path bin\XlsImageShrink.exe, README.md, LICENSE -DestinationPath "XlsImageShrink-$tag.zip"
           gh release create $tag bin\XlsImageShrink.exe "XlsImageShrink-$tag.zip" --target "${{ github.sha }}" --title "XlsImageShrink $tag" --notes "$note`n`nExcel を使わないテストの結果は Actions の citest-report を参照してください。"
