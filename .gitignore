@@ -1,0 +1,5 @@
+bin/
+selftest/
+citest/
+build.log
+build_done.flag

@@ -1,0 +1,46 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (.NET Framework 4.x csc)
+        shell: cmd
+        run: |
+          set CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
+          if not exist bin mkdir bin
+          "%CSC%" /nologo /utf8output /codepage:65001 /target:winexe /platform:anycpu /optimize+ /warnaserror- /out:bin\XlsImageShrink.exe /r:System.dll /r:System.Core.dll /r:Microsoft.CSharp.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Xml.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Web.Extensions.dll /r:Microsoft.VisualBasic.dll src\*.cs
+
+      - name: Test (no Excel)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "citest"
+          $p = Start-Process -FilePath "bin\XlsImageShrink.exe" -ArgumentList "--citest", "`"$dir`"" -Wait -PassThru
+          $report = Join-Path $dir "citest_report.txt"
+          if (Test-Path $report) {
+            Get-Content $report -Encoding UTF8
+            Copy-Item $report bin\citest_report.txt
+            $fails = Select-String -Path $report -Pattern "^(FAIL|FATAL)" -Encoding UTF8
+            foreach ($f in $fails) { Write-Output "::error::$($f.Line)" }
+          } else {
+            Write-Output "::error::citest_report.txt was not created"
+          }
+          Write-Output "exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: XlsImageShrink
+          path: |
+            bin/XlsImageShrink.exe
+            bin/citest_report.txt
+            build.bat
