@@ -3,12 +3,11 @@ name: build
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write   # タグ push 時にリリースを作成する
+  contents: write   # リリースを作成する
   actions: read     # SignPath が成果物を取得する
 
 jobs:
@@ -89,14 +88,18 @@ jobs:
           name: XlsImageShrink
           path: bin/XlsImageShrink.exe
 
+      # main への push で、AssemblyInfo のバージョンのリリースがまだなければ作成する
       - name: Create release
-        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${{ github.ref_name }}"
+          $m = Select-String -Path src\AssemblyInfo.cs -Pattern 'AssemblyInformationalVersion\("([^"]+)"\)'
+          $tag = "v" + $m.Matches[0].Groups[1].Value
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) { Write-Output "$tag は作成済み"; exit 0 }
           $signed = "${{ steps.sign.outcome }}" -eq "success"
-          $note = if ($signed) { "コード署名済み（SignPath Foundation）" } else { "コード署名なし。Windows 11 のスマート アプリ コントロールが有効な PC では起動がブロックされます。" }
+          $note = if ($signed) { "コード署名済み（SignPath Foundation）。" } else { "コード署名なし。Windows 11 のスマート アプリ コントロールが有効な PC では起動がブロックされます。" }
           Compress-Archive -Path bin\XlsImageShrink.exe, README.md, LICENSE -DestinationPath "XlsImageShrink-$tag.zip"
-          gh release create $tag bin\XlsImageShrink.exe "XlsImageShrink-$tag.zip" --title "XlsImageShrink $tag" --notes "$note`n`nExcel を使わないテストの結果は Actions の citest-report を参照してください。"
+          gh release create $tag bin\XlsImageShrink.exe "XlsImageShrink-$tag.zip" --target "${{ github.sha }}" --title "XlsImageShrink $tag" --notes "$note`n`nExcel を使わないテストの結果は Actions の citest-report を参照してください。"
