@@ -19,11 +19,12 @@ namespace XlsImageShrink
         Button btnBrowse, btnScan, btnRun, btnPause, btnStop, btnDry, btnHistory, btnLogs, btnMoveBrowse, btnRetry;
         ListView lv;
         ProgressBar bar;
-        Label lblProgress, lblSummary;
+        Label lblProgress, lblSummary, lblHint;
         List<FileItem> items = new List<FileItem>();
         JobRunner runner;
         Thread worker;
-        bool paused, loading, excelOk;
+        bool paused, loading, excelOk, scanning, rescanPending, runPending, runPendingDry;
+        string scannedKey;
         DateTime jobStart;
 
         public MainForm()
@@ -40,11 +41,13 @@ namespace XlsImageShrink
             S = Settings.Load(AppPaths.SettingsFile);
             Build();
             loading = true; ToUi(); loading = false;
-            UpdateEnable();
             excelOk = ExcelSession.IsInstalled();
-            if (!excelOk) AppendLog("ERROR E001: Excel が見つかりません。スキャンはできますが、実行はできません。");
+            if (!excelOk) AppendLog("ERROR E001: Excel が見つかりません。.xls の変換とレイアウト検証はできません（変換済みファイルの画像圧縮はできます）。");
+            UpdateEnable();
             CleanupOld();
             FormClosing += OnClosing;
+            // 前回のフォルダが残っていれば、起動時に対象ファイルを検索しておく
+            Shown += delegate { if (Directory.Exists(txtFolder.Text.Trim())) RequestScan(false); else SetHint("対象フォルダを選ぶと、対象ファイルを自動で検索します。"); };
         }
 
         // ---------- 画面構築 ----------
@@ -76,13 +79,19 @@ namespace XlsImageShrink
             L(top, "対象フォルダ", 8, 8);
             txtFolder = new TextBox(); txtFolder.Location = new Point(100, 8); txtFolder.Width = 880; txtFolder.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right; top.Controls.Add(txtFolder);
             btnBrowse = new Button(); btnBrowse.Text = "参照..."; btnBrowse.Location = new Point(990, 6); btnBrowse.Width = 80; btnBrowse.Anchor = AnchorStyles.Top | AnchorStyles.Right; top.Controls.Add(btnBrowse);
-            btnBrowse.Click += delegate { string p = PickFolder(txtFolder.Text); if (p != null) txtFolder.Text = p; };
-            btnScan = new Button(); btnScan.Text = "スキャン"; btnScan.Location = new Point(1080, 6); btnScan.Width = 90; btnScan.Anchor = AnchorStyles.Top | AnchorStyles.Right; top.Controls.Add(btnScan);
-            btnScan.Click += delegate { DoScan(); };
+            btnBrowse.Click += delegate { string p = PickFolder(txtFolder.Text); if (p != null) { txtFolder.Text = p; RequestScan(false); } };
+            txtFolder.KeyDown += delegate(object s, KeyEventArgs e) { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; RequestScan(false); } };
+            txtFolder.Leave += delegate { RescanIfChanged(); };
+            btnScan = new Button(); btnScan.Text = "再検索"; btnScan.Location = new Point(1080, 6); btnScan.Width = 90; btnScan.Anchor = AnchorStyles.Top | AnchorStyles.Right; top.Controls.Add(btnScan);
+            btnScan.Click += delegate { RequestScan(false); };
             chkRecursive = C(top, "サブフォルダも対象", 100, 36);
             L(top, "除外フォルダ名（; 区切り）", 260, 36);
             txtExclude = new TextBox(); txtExclude.Location = new Point(430, 36); txtExclude.Width = 260; top.Controls.Add(txtExclude);
+            txtExclude.Leave += delegate { RescanIfChanged(); };
             chkIncludeConv = C(top, "変換済みファイル（.xlsx / .xlsm）も対象にする（画像圧縮のみ）", 100, 62);
+            chkRecursive.CheckedChanged += delegate { RescanIfChanged(); };
+            chkIncludeConv.CheckedChanged += delegate { RescanIfChanged(); };
+            lblHint = new Label(); lblHint.AutoSize = true; lblHint.Location = new Point(720, 39); lblHint.ForeColor = Color.DimGray; top.Controls.Add(lblHint);
 
             Panel left = new Panel(); left.Dock = DockStyle.Left; left.Width = 330; left.AutoScroll = true;
             int y = 4;
@@ -184,7 +193,7 @@ namespace XlsImageShrink
             if (paths == null || paths.Length == 0 || worker != null) return;
             string p = paths[0];
             if (File.Exists(p)) p = Path.GetDirectoryName(p);
-            if (Directory.Exists(p)) txtFolder.Text = p;
+            if (Directory.Exists(p)) { txtFolder.Text = p; RequestScan(false); }
         }
 
         // ---------- 設定 ----------
@@ -244,7 +253,7 @@ namespace XlsImageShrink
         {
             if (btnRun == null) return;
             bool busy = worker != null;
-            bool scanned = items.Count > 0;
+            bool folderOk = Directory.Exists(txtFolder.Text.Trim());
             foreach (Control c in new Control[] { txtFolder, btnBrowse, btnScan, chkRecursive, txtExclude, chkIncludeConv, cmbPreset, numPpi, numLong, numQ, chkPngJpeg, numMinPpi, numMinQ,
                 chkSize, rbKeep, rbDelete, rbMove, cmbConflict, txtSuffix, chkVerify, chkTimestamp, chkEmptyVba, btnHistory })
                 c.Enabled = !busy;
@@ -252,32 +261,104 @@ namespace XlsImageShrink
             chkRecycle.Enabled = !busy && rbDelete.Checked;
             txtMoveRoot.Enabled = !busy && rbMove.Checked; btnMoveBrowse.Enabled = !busy && rbMove.Checked;
             chkKeepDiff.Enabled = !busy && !rbKeep.Checked && chkVerify.Checked;
-            btnRun.Enabled = !busy && scanned && excelOk; btnDry.Enabled = !busy && scanned && excelOk;
+            // 検索中でも押せる（検索が終わってから確認して実行する）
+            btnRun.Enabled = !busy && folderOk; btnDry.Enabled = !busy && folderOk;
+            btnScan.Enabled = !busy && !scanning;
             bool anyFailed = false;
             foreach (FileItem it in items) if (it.Status == "失敗" || (it.Status == "スキップ" && it.ErrorCode == "E101")) anyFailed = true;
-            btnRetry.Enabled = !busy && anyFailed && excelOk;
+            btnRetry.Enabled = !busy && !scanning && anyFailed;
             btnPause.Enabled = busy; btnStop.Enabled = busy;
         }
 
-        // ---------- スキャン ----------
-        void DoScan()
+        // ---------- スキャン（フォルダを選んだら自動で行う） ----------
+        void SetHint(string t) { if (lblHint != null) lblHint.Text = t; }
+
+        string ScanKey()
         {
+            return string.Join("|", new string[] { S.TargetFolder, S.Recursive.ToString(), S.ExcludeFolders ?? "", S.IncludeConverted.ToString(), S.CompressSuffix ?? "",
+                S.OriginalMode == "move" ? (S.MoveRoot ?? "") : "" });
+        }
+
+        // 検索条件が前回の検索から変わっていれば検索し直す
+        void RescanIfChanged()
+        {
+            if (loading || worker != null || txtFolder == null) return;
             FromUi();
-            if (S.TargetFolder == "" || !Directory.Exists(S.TargetFolder)) { MessageBox.Show(this, "対象フォルダを指定してください。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+            if (!Directory.Exists(S.TargetFolder)) { if (scannedKey != null || items.Count > 0) RequestScan(false); else UpdateEnable(); return; }
+            if (ScanKey() != scannedKey) RequestScan(false);
+        }
+
+        /// <summary>対象フォルダを検索して一覧に表示する。sync=true は検索が終わるまで戻らない。</summary>
+        internal void RequestScan(bool sync)
+        {
+            if (worker != null) return;
+            if (scanning) { rescanPending = true; return; }
+            FromUi();
+            if (S.TargetFolder == "" || !Directory.Exists(S.TargetFolder))
+            {
+                ShowItems(new List<FileItem>(), null, null);
+                SetHint(S.TargetFolder == "" ? "対象フォルダを選ぶと、対象ファイルを自動で検索します。" : "フォルダが見つかりません: " + S.TargetFolder);
+                return;
+            }
             if (S.OriginalMode == "move" && S.MoveRoot != "")
             {
                 try
                 {
                     string a = Path.GetFullPath(S.TargetFolder).TrimEnd('\\') + "\\", b = Path.GetFullPath(S.MoveRoot).TrimEnd('\\') + "\\";
-                    if (b.StartsWith(a, StringComparison.OrdinalIgnoreCase)) AppendLog("WARN 移動先が対象フォルダの内側にあります。移動先フォルダはスキャン対象から除外します。");
+                    if (b.StartsWith(a, StringComparison.OrdinalIgnoreCase)) AppendLog("WARN 移動先が対象フォルダの内側にあります。移動先フォルダは検索対象から除外します。");
                 }
                 catch { }
             }
             S.Save(AppPaths.SettingsFile);
-            Cursor = Cursors.WaitCursor;
-            try { items = FileScanner.Scan(S, null, null); }
-            catch (Exception ex) { MessageBox.Show(this, "スキャンに失敗しました: " + ex.Message, Text); items = new List<FileItem>(); }
-            Cursor = Cursors.Default;
+            Settings snap = S.Clone();
+            string key = ScanKey();
+            scanning = true;
+            SetHint("検索中…  " + snap.TargetFolder);
+            lblSummary.Text = "";
+            UpdateEnable();
+            if (sync)
+            {
+                List<FileItem> found = null; string error = null;
+                try { found = FileScanner.Scan(snap, null, null); } catch (Exception ex) { error = ex.Message; }
+                ScanDone(found, key, error, snap);
+                return;
+            }
+            Thread t = new Thread(delegate()
+            {
+                List<FileItem> found = null; string error = null;
+                try { found = FileScanner.Scan(snap, null, null); } catch (Exception ex) { error = ex.Message; }
+                UiPost(delegate { ScanDone(found, key, error, snap); });
+            });
+            t.IsBackground = true;
+            t.Start();
+        }
+
+        void ScanDone(List<FileItem> found, string key, string error, Settings snap)
+        {
+            scanning = false;
+            if (rescanPending) { rescanPending = false; UpdateEnable(); RequestScan(false); return; }
+            if (error != null)
+            {
+                ShowItems(new List<FileItem>(), null, snap);
+                SetHint("検索に失敗しました: " + error);
+                AppendLog("ERROR 検索に失敗しました: " + error);
+                return;
+            }
+            ShowItems(found, key, snap);
+            if (runPending)
+            {
+                runPending = false;
+                int n = 0; foreach (FileItem it in items) if (it.Checked) n++;
+                if (n == 0) { MessageBox.Show(this, "処理するファイルがありません。", Text); return; }
+                if (MessageBox.Show(this, "対象ファイルを検索しました。" + n + " 件を処理します。実行しますか？", "確認", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                    StartJob(runPendingDry, false);
+            }
+        }
+
+        void ShowItems(List<FileItem> found, string key, Settings snap)
+        {
+            items = found;
+            scannedKey = key;
             // 出力の競合を事前に表示
             foreach (FileItem it in items)
             {
@@ -286,21 +367,40 @@ namespace XlsImageShrink
                 if (File.Exists(stem + ".xlsx") || File.Exists(stem + ".xlsm")) it.Message = "同名の出力あり（" + cmbConflict.Text + "）";
             }
             lv.BeginUpdate(); lv.Items.Clear();
-            long total = 0;
+            long total = 0; int nConv = 0, nCmp = 0, nOn = 0;
             foreach (FileItem it in items)
             {
-                ListViewItem li = new ListViewItem(Util.RelativeTo(S.TargetFolder, it.Path));
+                ListViewItem li = new ListViewItem(snap != null ? Util.RelativeTo(snap.TargetFolder, it.Path) : it.Path);
                 for (int i = 0; i < 7; i++) li.SubItems.Add("");
-                li.Tag = it; it.Tag = li; li.Checked = it.Checked;
                 if (it.PreNote != "" && it.PreNote != "マクロあり") it.Status = "対象外（" + it.PreNote + "）";
+                if (it.Kind == ItemKind.Convert && !excelOk && it.Checked) { it.Checked = false; it.Status = "対象外（Excel なし）"; }
+                li.Tag = it; it.Tag = li; li.Checked = it.Checked;
                 lv.Items.Add(li); Refresh(it); total += it.Size;
+                if (it.Kind == ItemKind.Convert) nConv++; else nCmp++;
+                if (it.Checked) nOn++;
             }
             lv.EndUpdate();
-            lblSummary.Text = items.Count + " 件 / 合計 " + Util.FormatSize(total);
-            AppendLog("スキャン完了: " + items.Count + " 件 / " + Util.FormatSize(total));
+            if (snap != null)
+            {
+                lblSummary.Text = items.Count + " 件 / 合計 " + Util.FormatSize(total);
+                string detail = "xls " + nConv + " 件" + (snap.IncludeConverted ? "、変換済み " + nCmp + " 件" : "");
+                SetHint(items.Count == 0 ? "対象ファイルが見つかりません（" + (snap.Recursive ? "サブフォルダを含む" : "サブフォルダを含まない") + "）"
+                    : items.Count + " 件見つかりました（" + detail + "）。処理対象 " + nOn + " 件。「実行」で開始します。");
+                AppendLog("検索完了: " + snap.TargetFolder + "  " + items.Count + " 件 / " + Util.FormatSize(total) + "（" + detail + "）");
+            }
+            else lblSummary.Text = "";
             bar.Value = 0; lblProgress.Text = "";
             UpdateEnable();
         }
+
+        // ----- テスト用 -----
+        internal void TestSetFolder(string p) { txtFolder.Text = p; RequestScan(true); }
+        internal int TestListCount() { return lv.Items.Count; }
+        internal int TestCheckedCount() { int n = 0; foreach (ListViewItem li in lv.Items) if (li.Checked) n++; return n; }
+        internal bool TestRunEnabled() { return btnRun.Enabled; }
+        internal string TestHint() { return lblHint.Text; }
+        internal void TestSetIncludeConverted(bool v) { loading = true; chkIncludeConv.Checked = v; loading = false; }
+        internal void TestSetRecursive(bool v) { loading = true; chkRecursive.Checked = v; loading = false; }
 
         void Refresh(FileItem it)
         {
@@ -319,9 +419,18 @@ namespace XlsImageShrink
         void StartJob(bool dry, bool retryOnly)
         {
             if (worker != null) return;
+            if (scanning) { runPending = true; runPendingDry = dry; SetHint("検索が終わりしだい、確認して実行します…"); return; }
             FromUi();
             string err = S.Validate();
             if (err != null) { MessageBox.Show(this, err, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+            if (!retryOnly && ScanKey() != scannedKey)
+            {
+                // フォルダや検索条件が変わっていたら検索し直してから確認する
+                RequestScan(true);
+                int n = 0; foreach (FileItem it in items) if (it.Checked) n++;
+                if (n == 0) { MessageBox.Show(this, "処理するファイルがありません。", Text); return; }
+                if (MessageBox.Show(this, "対象ファイルを検索しました。" + n + " 件を処理します。実行しますか？", "確認", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            }
             List<FileItem> todo = new List<FileItem>();
             foreach (FileItem it in items)
             {
@@ -329,7 +438,16 @@ namespace XlsImageShrink
                 it.Checked = want;
                 if (want) todo.Add(it);
             }
-            if (todo.Count == 0) { MessageBox.Show(this, "処理するファイルがありません。", Text); return; }
+            if (todo.Count == 0) { MessageBox.Show(this, "処理するファイルがありません。一覧でチェックを付けてください。", Text); return; }
+            bool noExcelVerify = false;
+            if (!excelOk)
+            {
+                int conv = 0;
+                foreach (FileItem it in todo) if (it.Kind == ItemKind.Convert) { it.Checked = false; conv++; }
+                if (conv > 0) todo.RemoveAll(delegate(FileItem it) { return it.Kind == ItemKind.Convert; });
+                if (todo.Count == 0) { MessageBox.Show(this, "Excel が見つからないため、.xls の変換はできません。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                if (S.VerifyLayout) noExcelVerify = true;
+            }
             if (!dry && S.OriginalMode == "delete" && !S.DeleteToRecycle)
             {
                 if (MessageBox.Show(this, "元ファイル " + todo.Count + " 件を完全に削除します（ごみ箱に入らず、元に戻せません）。\r\n実行しますか？", "確認", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
@@ -347,6 +465,7 @@ namespace XlsImageShrink
             catch { }
             S.Save(AppPaths.SettingsFile);
             runner = new JobRunner(S); runner.DryRun = dry;
+            if (noExcelVerify) { runner.S.VerifyLayout = false; AppendLog("WARN Excel がないため、レイアウト検証をせずに実行します。"); }
             runner.Log.Line += delegate(string line) { UiPost(delegate { AppendLog(line); }); };
             runner.ItemChanged += delegate(FileItem it) { UiPost(delegate { Refresh(it); }); };
             runner.Progress += delegate(int done, int total) { UiPost(delegate { ShowProgress(done, total); }); };

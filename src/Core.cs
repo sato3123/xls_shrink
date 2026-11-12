@@ -80,7 +80,7 @@ namespace XlsImageShrink
     public static class AppPaths
     {
         public static string BaseDir;
-        public const string Version = "XlsImageShrink 1.0.0";
+        public const string Version = "XlsImageShrink 1.0.1";
 
         public static void Init(string overrideDir)
         {

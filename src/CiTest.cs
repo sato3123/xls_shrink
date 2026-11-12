@@ -54,6 +54,7 @@ namespace XlsImageShrink
             Step("圧縮のみジョブ", TestCompressJob);
             Step("移動と復元", TestRestore);
             Step("設定", TestSettings);
+            Step("画面（フォルダ選択で自動検索）", TestUi);
             Out("");
             Out("合計: PASS " + pass + " / FAIL " + fail);
             Out("END");
@@ -683,6 +684,37 @@ namespace XlsImageShrink
 
             // 別ドライブ相当: 同一ボリューム判定
             Check("T-ORG-06a", "同一ボリューム判定", Util.SameVolume(@"C:\a\b.xls", @"C:\x\y.xls") && !Util.SameVolume(@"C:\a.xls", @"D:\a.xls"), "");
+        }
+
+        static void TestUi()
+        {
+            string d = Path.Combine(root, "ui");
+            Directory.CreateDirectory(Path.Combine(d, "sub"));
+            File.WriteAllBytes(Path.Combine(d, "a.xls"), OleBytes(false));
+            File.WriteAllBytes(Path.Combine(d, "sub", "b.xls"), OleBytes(true));
+            MakeXlsx(Path.Combine(d, "sub", "c.xlsx"), false);
+            bool excel = ExcelSession.IsInstalled();
+            using (MainForm f = new MainForm())
+            {
+                Check("T-GUI-01b", "フォルダ未選択では「実行」を押せない", !f.TestRunEnabled(), "");
+                f.TestSetFolder(d);
+                Check("T-GUI-20", "フォルダを選ぶと自動で検索し一覧に表示", f.TestListCount() == 2, "件数=" + f.TestListCount() + " " + f.TestHint());
+                Check("T-GUI-21", "検索後は「実行」を押せる（スキャンボタン不要）", f.TestRunEnabled(), "");
+                Check("T-GUI-22", "検索結果の件数を画面に表示", f.TestHint().IndexOf("2 件見つかりました") >= 0, f.TestHint());
+                if (!excel) Check("T-ERR-01b", "Excel がない環境では .xls のチェックを外す", f.TestCheckedCount() == 0, "チェック=" + f.TestCheckedCount());
+                f.TestSetIncludeConverted(true);
+                f.TestSetFolder(d);
+                Check("T-GUI-23", "「変換済みも対象」を ON にすると .xlsx も一覧に出る", f.TestListCount() == 3, "件数=" + f.TestListCount());
+                if (!excel) Check("T-ERR-01c", "Excel がなくても変換済みファイルは処理対象", f.TestCheckedCount() == 1, "チェック=" + f.TestCheckedCount());
+                f.TestSetRecursive(false);
+                f.TestSetFolder(d);
+                Check("T-GUI-24", "サブフォルダ OFF で直下のみ", f.TestListCount() == 1, "件数=" + f.TestListCount());
+                f.TestSetFolder(Path.Combine(d, "nothing_here"));
+                Check("T-GUI-25", "存在しないフォルダでは一覧を空にし「実行」を押せない", f.TestListCount() == 0 && !f.TestRunEnabled() && f.TestHint().IndexOf("見つかりません") >= 0, f.TestHint());
+                string empty = Path.Combine(root, "ui_empty"); Directory.CreateDirectory(empty);
+                f.TestSetFolder(empty);
+                Check("T-GUI-26", "対象ファイルがないときはそう表示", f.TestListCount() == 0 && f.TestHint().IndexOf("対象ファイルが見つかりません") >= 0, f.TestHint());
+            }
         }
 
         static void TestSettings()
